@@ -1,0 +1,43 @@
+#!/usr/bin/env sh
+set -e
+
+##
+## creates a psql session and signs in using
+## the application's credentials
+##
+## usage:
+## dbsqladmin <name of app>
+#
+
+if [ "$#" -lt 1 ]; then
+  echo "Usage: $0 <name of app>"
+  exit 1
+fi
+
+APP="$1"
+SECRET="google-sql-$APP"
+NAMESPACE="tbd"
+JSON_SECRET=$(kubectl get secret "$SECRET" -n $NAMESPACE -o jsonpath='{.data}' | jq -r 'map_values(@base64d)')
+DB_USER=$(echo $JSON_SECRET | jq -r 'to_entries[] | select(.key | endswith("_USERNAME")) | .value')
+DB_PW=$(echo $JSON_SECRET | jq -r 'to_entries[] | select(.key | endswith("_PASSWORD")) | .value')
+DB_NAME=$(echo $JSON_SECRET | jq -r 'to_entries[] | select(.key | endswith("_DATABASE")) | .value')
+RANDOM_PORT=$(jot -r 1  2000 65000)
+
+# run postgres-proxy in background,
+# and keep its PID
+nohup nais postgres proxy -p $RANDOM_PORT $APP > /dev/null 2>&1 &
+DBPROXY_PID=$!
+
+echo Starting db proxy pid with $DBPROXY_PID on port $RANDOM_PORT
+
+# wait until port is active
+while ! nc -z localhost $RANDOM_PORT; do
+  sleep 0.2
+done
+
+set +e
+PGPASSWORD=$DB_PW psql -h localhost -U $DB_NAME -p $RANDOM_PORT -U $DB_USER $DB_NAME
+set -e
+
+echo Stopping dbproxy with pid $DBPROXY_PID
+kill $DBPROXY_PID
